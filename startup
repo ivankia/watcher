@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+
+from bitmex_watcher import watcher_server
+from bitmex_watcher.settings import settings
+
+watcher_server.start()
