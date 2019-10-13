@@ -2,11 +2,14 @@ BASE_URL = "https://www.bitmex.com/api/v1/"
 
 INSTANCE_NAME = "WATCHER_NODE"
 
-MARKET_ORDER_BOOK_DATA_NAME = "orderBookL2"
+MARKET_ORDER_BOOK_DATA_NAME = "orderBookL2_25"
+#MARKET_ORDER_BOOK_DATA_NAME = "orderBookL2"
 
 MONGO_DB_URI = "mongodb://root:toor@172.17.0.1:27017/"
+#MONGO_DB_URI = "mongodb://root:toor@mongo:27017/"
 
-REDIS_HOST = "172.17.0.1"
+#REDIS_HOST = "172.17.0.1"
+REDIS_HOST = "redis"
 REDIS_PORT = 6379
 REDIS_DB = 0
 
@@ -16,3 +19,5 @@ ENABLE_SAMPLE_SUBSCRIBER = True
 # Logging to files is not recommended when you run this on Docker.
 # By leaving the name empty the program avoids to create log files.
 LOG_FILE_NAME = ''
+
+ORDER_BOOK_L2_DATA = 'orderbook_l2_data'

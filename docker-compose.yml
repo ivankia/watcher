@@ -10,26 +10,32 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: toor
     extra_hosts:
     - "mongodb:172.18.0.11"
+    dns: 8.8.8.8
+
   redis:
     image: redis:5.0.3
-    container_name: redis-cache
+    container_name: cache
     volumes:
     - "./redis.conf:/usr/local/etc/redis/redis.conf"
     ports:
     - "6379:6379"
     command: "redis-server /usr/local/etc/redis/redis.conf"
     extra_hosts:
-    - "redis-cache:172.18.0.12"
-  mongoadmin:
+    - "cache:172.18.0.12"
+    dns: 8.8.8.8
+
+  mongo-web:
     image: huggingface/mongoku
     container_name: mongo-web
     ports:
     - "3100:3100"
     environment:
-      MONGOKU_DEFAULT_HOST: "mongodb://root:toor@172.17.0.1:27017;172.17.0.1:27017"
+      MONGOKU_DEFAULT_HOST: "mongodb://root:toor@mongo:27017;mongo:27017"
     extra_hosts:
     - "mongo-web:172.18.0.13"
-  redisadmin:
+    dns: 8.8.8.8
+
+  redis-web:
     image: marian/rebrow
     container_name: redis-web
     ports:
@@ -42,8 +48,9 @@ services:
     container_name: monitor
     extra_hosts:
     - "monitor:172.18.0.10"
+    dns: 8.8.8.8
     depends_on:
       - mongo
       - redis
-      - mongoadmin
-      - redisadmin
+      - mongo-web
+      - redis-web

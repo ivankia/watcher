@@ -1,1 +1,1 @@
-docker-compose up -d --force-recreate --renew-anon-volumes
+docker-compose up -d --build --force-recreate --renew-anon-volumes &
