@@ -18,7 +18,6 @@ from bitmex_watcher.models import *
 from bitmex_watcher.settings import settings
 from bitmex_watcher.utils import log, constants, errors
 
-
 logger = log.setup_custom_logger('root')
 
 
@@ -28,8 +27,7 @@ class MarketWatcher:
         self.instance_name = settings.INSTANCE_NAME
 
         # Client to the BitMex exchange.
-        logger.info("Connecting to BitMEX exchange: %s %s %s",
-                    settings.BASE_URL, settings.SYMBOL, settings.MARKET_ORDER_BOOK_DATA_NAME)
+        logger.info("Connecting to BitMEX exchange: %s %s %s", settings.BASE_URL, settings.SYMBOL, settings.MARKET_ORDER_BOOK_DATA_NAME)
         self.bitmex_client = BitMEXClient(
             settings.BASE_URL, settings.SYMBOL,
             api_key=None, api_secret=None,
@@ -41,11 +39,14 @@ class MarketWatcher:
         logger.info("Connecting to %s" % settings.MONGO_DB_URI)
         self.mongo_client = pymongo.MongoClient(settings.MONGO_DB_URI)
         self.bitmex_db = self.mongo_client[settings.BITMEX_DB]
+
         # Create indices and set caps to collections.
         self._initialize_db_scheme()
+
         # Collections to save data in.
         self.trades_collection = self.bitmex_db[settings.TRADES_COLLECTION]
         self.order_book_snapshot_collection = self.bitmex_db[settings.ORDER_BOOK_SNAPSHOTS_COLLECTION]
+        self.order_book_l2_collection = self.bitmex_db[settings.ORDER_BOOK_L2_DATA_COLLECTION]
         self.trades_cursor_collection = self.bitmex_db[settings.TRADES_CURSOR_COLLECTION]
 
         # Redis client.
@@ -69,13 +70,15 @@ class MarketWatcher:
             logger.info("MongoDB scheme is already initialized. Do nothing.")
         else:
             logger.info("INITIALIZING MongoDB scheme.")
-            self.bitmex_db.create_collection(settings.TRADES_COLLECTION,
-                                             capped=True, size=settings.MAX_TRADES_COLLECTION_BYTES)
+            self.bitmex_db.create_collection(settings.TRADES_COLLECTION, capped=True, size=settings.MAX_TRADES_COLLECTION_BYTES)
             self.bitmex_db[settings.TRADES_COLLECTION].create_index([("timestamp", pymongo.ASCENDING)])
 
-            self.bitmex_db.create_collection(settings.ORDER_BOOK_SNAPSHOTS_COLLECTION,
-                                             capped=True, size=settings.MAX_ORDER_BOOK_COLLECTION_BYTES)
+            self.bitmex_db.create_collection(settings.ORDER_BOOK_SNAPSHOTS_COLLECTION, capped=True, size=settings.MAX_ORDER_BOOK_COLLECTION_BYTES)
             self.bitmex_db[settings.ORDER_BOOK_SNAPSHOTS_COLLECTION].create_index([("timestamp", pymongo.ASCENDING)])
+            logger.info("INITIALIZED MongoDB scheme.")
+
+            self.bitmex_db.create_collection(settings.ORDER_BOOK_L2_DATA_COLLECTION, capped=True, size=settings.MAX_ORDER_BOOK_COLLECTION_BYTES)
+            self.bitmex_db[settings.ORDER_BOOK_L2_DATA_COLLECTION].create_index([("timestamp", pymongo.ASCENDING)])
             logger.info("INITIALIZED MongoDB scheme.")
 
     def sanity_check(self):
@@ -116,6 +119,10 @@ class MarketWatcher:
     @staticmethod
     def create_order_book_snapshot(timestamp, bids, asks):
         return OrderBookSnapshot(timestamp, bids, asks, settings.TARGET_ORDER_BOOK_PRICE_RATIO)
+
+    @staticmethod
+    def create_order_book_l2(timestamp, bids, asks):
+        return OrderBookL2(timestamp, bids, asks, settings.TARGET_ORDER_BOOK_PRICE_RATIO)
 
     @staticmethod
     def filter_new_trades(cursor, all_trades):
@@ -196,17 +203,30 @@ class MarketWatcher:
                     logger.info("NO new trades.")
 
                 # Fetch order books.
-                timestamp = datetime.now().astimezone(constants.TIMEZONE)
-                bids, asks = self.bitmex_client.ws_sorted_bids_and_asks_of_market()
-                order_book_snapshot = self.create_order_book_snapshot(timestamp, bids, asks)
+                # timestamp = datetime.now().astimezone(constants.TIMEZONE)
+                # bids, asks = self.bitmex_client.ws_sorted_bids_and_asks_of_market()
+                # order_book_snapshot = self.create_order_book_snapshot(timestamp, bids, asks)
+                # if logger.isEnabledFor(logging.DEBUG):
+                #     logger.debug("OrderBookSnapshot: %s" % str(order_book_snapshot))
+                # if not MarketWatcher.is_healthy(order_book_snapshot):
+                #     logger.error("OrderBookSnapshot corrupted: %s" % str(order_book_snapshot))
+                #     break
+
+                # prev_digest = order_book_digest
+                # order_book_digest = order_book_snapshot.digest_string()
+
+                # Fetch orderBook_L2
+                timestamp     = datetime.now().astimezone(constants.TIMEZONE)
+                bids, asks    = ws_sorted_bids_and_asks_of_market_with_id(self)
+                order_book_l2 = self.create_order_book_l2(timestamp, bids, asks)
                 if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("OrderBookSnapshot: %s" % str(order_book_snapshot))
-                if not MarketWatcher.is_healthy(order_book_snapshot):
-                    logger.error("OrderBookSnapshot corrupted: %s" % str(order_book_snapshot))
+                    logger.debug("OrderBookSnapshot: %s" % str(order_book_l2))
+                if not MarketWatcher.is_healthy(order_book_l2):
+                    logger.error("OrderBookSnapshot corrupted: %s" % str(order_book_l2))
                     break
 
                 prev_digest = order_book_digest
-                order_book_digest = order_book_snapshot.digest_string()
+                order_book_digest = order_book_l2.digest_string()
 
                 if prev_digest == order_book_digest:
                     orders_idle_count += 1
@@ -215,13 +235,25 @@ class MarketWatcher:
                 else:
                     orders_idle_count = 0
                     # Save the order book snapshot to MongoDB.
-                    insert_result = self.order_book_snapshot_collection.insert_one(order_book_snapshot.to_dict())
-                    order_book_snapshot_id = str(insert_result.inserted_id)
-                    logger.info("A new order book snapshot is inserted: %s" % order_book_snapshot_id)
+                    # insert_result = self.order_book_snapshot_collection.insert_one(order_book_snapshot.to_dict())
+                    # order_book_snapshot_id = str(insert_result.inserted_id)
+                    # logger.info("A new order book snapshot is inserted: %s" % order_book_snapshot_id)
+
                     # We publish the updated order book snapshot.
-                    self.redis.publish(settings.REDIS_ORDER_BOOK_SNAPSHOT_ID_CHANNEL_NAME, order_book_snapshot_id)
+                    # self.redis.publish(settings.REDIS_ORDER_BOOK_SNAPSHOT_ID_CHANNEL_NAME, order_book_l2_id)
+                    # logger.info("Published to redis [%s]: %s",
+                    #             settings.REDIS_ORDER_BOOK_SNAPSHOT_ID_CHANNEL_NAME, order_book_l2_id)
+
+                    # Save the order book snapshot to MongoDB.
+                    insert_result = self.order_book_l2_collection.insert_one(order_book_l2.to_dict())
+                    order_book_l2_id = str(insert_result.inserted_id)
+
+                    logger.info("A new order book snapshot is inserted: %s" % order_book_l2_id)
+
+                    # We publish the updated order book snapshot.
+                    self.redis.publish(settings.REDIS_ORDER_BOOK_L2_ID_CHANNEL_NAME, order_book_l2_id)
                     logger.info("Published to redis [%s]: %s",
-                                settings.REDIS_ORDER_BOOK_SNAPSHOT_ID_CHANNEL_NAME, order_book_snapshot_id)
+                                settings.REDIS_ORDER_BOOK_L2_ID_CHANNEL_NAME, order_book_l2_id)
 
                 if settings.MAX_ORDERS_IDLE_COUNT < orders_idle_count:
                     logger.error("Order book NOT updated. Aborting. IdleCount=%d" % orders_idle_count)
@@ -247,6 +279,18 @@ class MarketWatcher:
             raise e
         finally:
             self.exit()
+
+
+def ws_sorted_bids_and_asks_of_market_with_id(self):
+    depth = self.bitmex_client.ws_raw_order_books_of_market(self)
+
+    bids = sorted([b for b in depth if b["side"] == "Buy"], key=lambda b: b["price"], reverse=True)
+    asks = sorted([b for b in depth if b["side"] == "Sell"], key=lambda b: b["price"], reverse=False)
+
+    def prune(order_books):
+        return [{"id": int(each["id"]), "price": float(each["price"]), "size": int(each["size"])} for each in order_books]
+
+    return self.bitmex_client.prune(bids), prune(asks)
 
 
 def start():
